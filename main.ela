@@ -1,43 +1,12 @@
 #c_flags " -lasound "
-
 import fmt::*;
-import midi;
+import midi::*;
+import math;
+import pthread::*;
 import jst::{
   Instrument,
   Signal
 };
-import math;
-import pthread::*;
-
-struct SineBoard {}
-impl Instrument for SineBoard {
-  fn initialize(*mut self) -> bool {
-    return true;
-  }
-  fn handle_midi_event(*mut self, status: s32, note: s32, velocity: s32, allocator: dyn Allocator) -> Option!<Signal> {
-    if status == 0x90 {
-      sample_rate: f32 = 44100.0;
-      duration: f32 = 1.0;
-      freq: f32 = 440.0 * (math::pow(2.0, (note as f32 - 69.0) / 12.0) as f32);
-      samples: s32 = (sample_rate * duration) as s32;
-      data: *mut f32 = allocator.allocate(samples * sizeof(f32));
-
-      for i in 0..samples {
-        t: f32 = i as f32 / sample_rate;
-        amp: f32 = velocity as f32 / 127.0;
-        data![i] = amp * (math::sin(2.0 * 3.14159265 * freq * t) as f32);
-      }
-      return Some(Signal.{
-        data: data,
-        length: samples,
-      });
-    } 
-
-    println("released or no status.");
-
-    return None();
-  }
-}
 
 extern fn snd_pcm_open(handle: *mut *mut void, name: *const u8, stream: s32, mode: s32) -> s32;
 extern fn snd_pcm_set_params(handle: *mut void, format: s32, access: s32, channels: u32, rate: u32, soft_resample: s32, latency: u32) -> s32;
@@ -48,6 +17,9 @@ extern fn snd_pcm_prepare(handle: *mut void) -> s32;
 const SND_PCM_STREAM_PLAYBACK: s32 = 0;
 const SND_PCM_FORMAT_FLOAT_LE: s32 = 10;
 const SND_PCM_ACCESS_RW_INTERLEAVED: s32 = 3;
+
+const BLOCK_SIZE: s32 = 1024;
+const OUTPUT_GAIN: f32 = 0.2;
 
 struct SignalQueue {
   queue: List!<Signal>,
@@ -79,47 +51,20 @@ impl SignalQueue {
   }
 }
 
-struct Voice {
-  freq: f32,
-  velocity: f32,
-  phase: f32,
-  phase_inc: f32,
-  envelope: f32,
-  env_state: s32,
-  release_start: f32,
-  released: bool,
-}
-
-impl Voice {
-  fn new(freq: f32, velocity: f32, sample_rate: f32) -> Self {
-    return Voice.{
-      freq: freq,
-      velocity: velocity,
-      phase: math::Random::next(1.0) * 2.0 * 3.14159265, // full 0..2pi
-      phase_inc: 2.0 * 3.14159265 * freq / sample_rate,
-      envelope: 0.0,
-      env_state: 0,
-      release_start: 0.0,
-      released: false,
-    };
-  }
-}
-
 struct Context {
   instruments: List!<dyn Instrument>,
   pcm: *mut void,
-  voices: List!<Voice>,
-  sample_rate: f32,
+  sample_rate: u32,
 }
 
 impl Context {
-  fn init_pcm(*mut self) -> bool {
+  fn init_pcm(*mut self, sample_rate: u32) -> bool {
     if snd_pcm_open(&mut self.pcm, "default"c, SND_PCM_STREAM_PLAYBACK, 0) != 0 {
       fmt::println("Failed to open ALSA device");
       return false;
     }
-    // Set channels to 1 (mono)
-    snd_pcm_set_params(self.pcm, SND_PCM_FORMAT_FLOAT_LE, SND_PCM_ACCESS_RW_INTERLEAVED, 1, 44100, 1, 500000);
+    self.sample_rate = sample_rate;
+    snd_pcm_set_params(self.pcm, SND_PCM_FORMAT_FLOAT_LE, SND_PCM_ACCESS_RW_INTERLEAVED, 1, sample_rate, 1, 100_000);
     return true;
   }
 }
@@ -127,136 +72,169 @@ impl Context {
 impl Destroy for Context {
   fn destroy(*mut self, recursive: bool = true) {
     self.instruments.destroy(recursive);
-    self.voices.destroy(recursive);
     if self.pcm != null {
       snd_pcm_close(self.pcm);
       self.pcm = null;
     }
   }
 }
+// Improved one-pole IIR lowpass filter for audio smoothing
+fn lowpass_filter(out: *mut f32, n: s32, smoothing: f32) {
+  mut prev: f32 = out![0];
+  for i in 1..n {
+    out![i] = prev + smoothing * (out![i] - prev);
+    prev = out![i];
+  }
+}
 
-const ATTACK: f32 = 0.01;
-const DECAY: f32 = 0.001;
-const SUSTAIN: f32 = 0.1;
-const RELEASE: f32 = 0.05;
-const BLOCK_SIZE: s32 = 256;
-const OUTPUT_GAIN: f32 = 1;
-
-fn mix_voices(context: *mut Context, out: *mut f32, n: s32) {
+fn mix_instruments(context: *mut Context, out: *mut f32, n: s32) {
   for i in 0..n {
     out![i] = 0.0;
   }
-  mut active_voices := 0;
-  for voice in context.voices.iter_mut() {
-    if voice.env_state != 4 {
-      active_voices += 1;
-    }
-    for i in 0..n {
-      if voice.env_state == 0 {
-        voice.envelope += 1.0 / (ATTACK * context.sample_rate);
-        if voice.envelope >= 1.0 {
-          voice.envelope = 1.0;
-          voice.env_state = 1;
-        }
-      } else if voice.env_state == 1 {
-        voice.envelope -= (1.0 - SUSTAIN) / (DECAY * context.sample_rate);
-        if voice.envelope <= SUSTAIN {
-          voice.envelope = SUSTAIN;
-          voice.env_state = 2;
-        }
-      } else if voice.env_state == 3 {
-        voice.envelope -= SUSTAIN / (RELEASE * context.sample_rate);
-        if voice.envelope <= 0.0 {
-          voice.envelope = 0.0;
-          voice.env_state = 4;
-        }
-      }
-      if voice.env_state != 4 {
-        sample := voice.velocity * voice.envelope * math::sin(voice.phase);
-        out![i] += sample;
-      }
-      voice.phase += voice.phase_inc;
-      if voice.phase > 2.0 * 3.14159265 {
-        voice.phase -= 2.0 * 3.14159265;
-      }
-    }
-  }
-  if active_voices > 0 {
-    fmt::printlnf("Active voices: %", (active_voices,), fmt::FormatOptions.{});
-  }
-
-  context.voices.retain(fn (voice: *Voice) -> bool {
-    return voice.env_state != 4;
-  });
-}
-
-fn play_audio_block(context: *mut Context) {
-  mut buffer: [f32; BLOCK_SIZE];
-  mix_voices(context, buffer, BLOCK_SIZE);
-  for i in 0..BLOCK_SIZE {
-    buffer[i] *= OUTPUT_GAIN;
-  }
-
-  if (buffer[0] != 0 && buffer[1] != 0) {
-    fmt::printlnf("Buffer[0..8]: % % % % % % % %", (
-      buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7]
-    ), fmt::FormatOptions.{});
+  for instrument in context.instruments.iter_mut() {
+    mut voices := instrument.get_active_voices();
+    instrument.mix_voices(out, n, context.sample_rate);
+    instrument.apply_envelope(context.sample_rate);
   }
 
 
-  // snd_pcm_prepare(context.pcm);
-  written := snd_pcm_writei(context.pcm, buffer, BLOCK_SIZE);
-  if written < 0 {
-    fmt::printlnf("ALSA write error: %", (written,), FormatOptions.{});
+  for i in 0..n {
+    out![i] *= OUTPUT_GAIN;
+  }
+  for i in 0..n {
+    out![i] = math::clamp!<f32>(out![i], -1, 1);
   }
 }
 
 fn audio_thread_main(arg: *mut void) {
   context: *mut Context = arg;
+  mut buffer: [f32; BLOCK_SIZE];
   while true {
-    play_audio_block(context);
-    std::c::usleep(1000);
+    std::c::memset(buffer, 0, BLOCK_SIZE * sizeof(f32));
+    mix_instruments(context, buffer, BLOCK_SIZE);
+    mut written: s32;
+    if (written = snd_pcm_writei(context.pcm, buffer, BLOCK_SIZE)) < 0 {
+      snd_pcm_prepare(context.pcm); 
+      fmt::printlnf("ALSA write error: %", (written,), FormatOptions.{});
+    }
+  }
+}
+
+fn sine_generator(type_erased_voice: *mut void) -> f32 {
+  voice: *mut Voice = type_erased_voice;
+
+  {
+    voice.phase += voice.phase_inc;
+    if voice.phase > 2.0 * 3.14159265 {
+      voice.phase -= 2.0 * 3.14159265;
+    }
+  }
+
+  velocity := voice.velocity * voice.velocity;
+  phase := voice.phase;
+  sample := velocity * math::cos(phase) * math::sin(phase) * 0.001;
+  return sample;
+}
+
+const MIN_VALUE := 0.0000000001;
+
+struct SineBoard {
+  voices: List!<Voice>,
+  attack:  f32 = MIN_VALUE,
+  decay:   f32 = 1,
+  sustain: f32 = 1,
+  release: f32 = MIN_VALUE,
+}
+
+impl Instrument for SineBoard {
+  fn initialize(*mut self) -> bool {
+    return true;
+  }
+  fn handle_midi_event(*mut self, status: s32, note: s32, velocity: s32, sample_rate: f32) {
+    if status == 0x90 && velocity > 0 {
+      freq: f32 = pitch_from_midi_note_id(note);
+      self.voices.push(Voice.{
+        freq: freq,
+        velocity: velocity as f32 / 127.0,
+        phase_inc: 2.0 * 3.14159265 * freq / sample_rate,
+        released: false,
+        generator: &mut sine_generator,
+      });
+    } else if (status == 0x80) || (status == 0x90 && velocity == 0) {
+      freq: f32 = pitch_from_midi_note_id(note);
+      for voice in self.voices.iter_mut() {
+        if math::abs(voice.freq - freq) < 1.0 {
+          voice.env_state = 3;
+        }
+      }
+    }
+  }
+  fn mix_voices(*mut self, out: *mut f32, n: s32, sample_rate: u32) {
+    self.apply_envelope(sample_rate);
+    for i in 0..n {
+      for voice in self.voices.iter_mut() {
+        if voice.env_state != 4 {
+          out![i] += voice.generator(voice);
+        }
+      }
+    }
+    self.voices.retain(fn (voice: *Voice) -> bool {
+      return voice.env_state != 4;
+    });
+  }
+  fn apply_envelope(*mut self, sample_rate: u32) {
+    for voice in self.voices.iter_mut() {
+      if voice.env_state == 0 {
+        voice.envelope += 1.0 / (self.attack * sample_rate as f32);
+        if voice.envelope >= 1.0 {
+          voice.envelope = 1.0;
+          voice.env_state = 1;
+        }
+      } else if voice.env_state == 1 {
+        voice.envelope -= (1.0 - self.sustain) / (self.decay * sample_rate as f32);
+        if voice.envelope <= self.sustain {
+          voice.envelope = self.sustain;
+          voice.env_state = 2;
+        }
+      } else if voice.env_state == 3 {
+        voice.envelope -= self.sustain / (self.release * sample_rate as f32);
+        if voice.envelope <= 0.0 {
+          voice.envelope = 0.0;
+          voice.env_state = 4;
+        }
+      }
+    }
+  }
+  fn get_active_voices(*mut self) -> mut [Voice] {
+    return self.voices.as_slice_mut();
   }
 }
 
 fn on_midi_event(status: s32, note: s32, velocity: s32, user_arg: *mut void) -> bool {
   context: *mut Context = user_arg;
-  freq: f32 = 440.0 * math::pow(2.0, (note as f32 - 69.0) / 12.0);
-  if status == 0x90 && velocity > 0 {
-  
-    context.voices.push(Voice::new(freq, velocity as f32 / 127.0, context.sample_rate));
-  } else if (status == 0x80) || (status == 0x90 && velocity == 0) {
-  
-    for voice in context.voices.iter_mut() {
-      if math::abs(voice.freq - freq) < 1.0 {
-        voice.env_state = 3;
-      }
+  for instrument in context.instruments.iter_mut() {
+    instrument.handle_midi_event(status, note, velocity, context.sample_rate);
+  }
+  return true;
+}
+
+fn on_init(user_arg: *mut void) -> bool {
+  context: *mut Context = user_arg;
+  for instrument in context.instruments {
+    if !instrument.initialize() {
+      fmt::println("failed to initialize instrument");
     }
   }
   return true;
 }
 
 fn main() {
-  using mut ctx: Context = .{
-    sample_rate: 44100.0,
-
-  };
-  mut sine_board: SineBoard;
-  ctx.instruments.push(dynof(&mut sine_board, Instrument));
-  if !ctx.init_pcm() {
+  using mut ctx: Context;
+  if !ctx.init_pcm(44100) {
     return;
   }
-  mut audio_thread: Thread;
-  audio_thread = Thread::start(&mut audio_thread_main, &mut ctx);
-  fn on_init(user_arg: *mut void) -> bool {
-    context: *mut Context = user_arg;
-    for instrument in context.instruments {
-      if !instrument.initialize() {
-        fmt::println("failed to initialize instrument");
-      }
-    }
-    return true;
-  }
+  mut sine_board: SineBoard;
+  ctx.instruments.push(dynof(&mut sine_board, Instrument));
+  mut audio_thread := Thread::start(&mut audio_thread_main, &mut ctx);
   midi::begin_midi_hook("/dev/snd/midiC1D0", &mut on_init, &mut on_midi_event, &mut ctx);
-
 }
