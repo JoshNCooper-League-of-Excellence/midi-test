@@ -1,0 +1,80 @@
+
+module std {
+  extern fn read(__fd: s32, __buf: *mut void, __nbytes: u64) -> s64;
+  extern fn write(__fd: s32, __buf: *const void, __n: u64) -> s64;
+  extern fn open(__file: *const u8, __oflag: s32, __mode: s32) -> s32;
+  extern fn close(__fd: s32) -> s32;
+}
+
+const O_RDWR:   s32 = 0x2;
+const S_IRUSR: s32 = 0x100;
+const S_IWUSR: s32 = 0x80;
+
+const MIDI_NOTE_OFF := 0x80;
+const MIDI_NOTE_ON := 0x90;
+
+type MidiCallback :: fn(s32, s32, s32, *mut void) -> bool;
+
+const note_names: [str; 12] = .[
+  "C",
+  "Db",
+  "D",
+  "Eb",
+  "E",
+  "F",
+  "F#",
+  "G",
+  "Ab",
+  "A",
+  "Bb",
+  "B",
+];
+
+// A4=440hz tuning of course.
+fn pitch_from_midi_note_id(note_id: s32) -> f32 {
+  return 440 * 2 ^ ((note_id - 69) / 12);
+}
+
+fn midi_note_printer_callback(status: s32, note_id: s32, velocity: s32) -> bool {
+  status_string: str = if status == MIDI_NOTE_OFF {
+    return "released";
+  } else if status == MIDI_NOTE_ON{
+    return "pressed";
+  } else {
+    return "NULL";
+  }
+
+  if status_string == "NULL" {
+    std::printf("(?) v=%d\n", velocity);
+    return true;
+  }
+
+  using note_name := format("%%", (note_names[note_id % 12], note_id / 12 - 1), fmt::FormatOptions.{});
+  printlnf("% % v=%", (note_name, status_string, velocity, fmt::FormatOptions.{}));
+  return true;
+}
+
+fn begin_midi_hook(mut device: str, init_callback: fn(*mut void) -> bool, midi_callback: MidiCallback = midi_note_printer_callback, user_arg: *mut void) {
+  mut fd := 0;
+  if (fd = std::open(device.data, O_RDWR, S_IRUSR | S_IWUSR)) == -1 {
+    std::printf("failed to open midi\n");
+    return;
+  }
+  defer std::close(fd);
+
+  if !init_callback(user_arg) {
+    return;
+  }
+
+  const N_VOICES := 12;
+  const N_BYTES := N_VOICES * 3;
+  mut buf: [u8; N_BYTES];
+  mut bytes_read := 0;
+  while (bytes_read = std::read(fd, buf, N_BYTES)) != -1 {
+    for idx in 0..(bytes_read/3) {
+      if !midi_callback(buf[idx+0], buf[idx+1], buf[idx+2], user_arg) {
+        return;
+      }
+    }
+  }
+}

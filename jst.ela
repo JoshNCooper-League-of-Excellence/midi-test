@@ -1,0 +1,14 @@
+
+struct Signal {
+  data : *mut f32,
+  length: s32,
+}
+
+// trait Effect {
+//   fn handle_signal(*mut self, signal: Signal) -> Signal;
+// }
+
+trait Instrument {
+  fn initialize(*mut self) -> bool;
+  fn handle_midi_event(*mut self, status: s32, note: s32, velocity: s32, allocator: dyn Allocator) -> Option!<Signal>;
+}

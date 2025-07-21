@@ -1,0 +1,122 @@
+#c_flags "-lasound"
+
+import fmt::*;
+import midi;
+import jst::{
+  Instrument,
+  Signal
+};
+import math;
+
+struct SineBoard {}
+impl Instrument for SineBoard {
+  fn initialize(*mut self) -> bool {
+    return true;
+  }
+  fn handle_midi_event(*mut self, status: s32, note: s32, velocity: s32, allocator: dyn Allocator) -> Option!<Signal> {
+    if status == 0x90 {
+      sample_rate: f32 = 44100.0;
+      duration: f32 = 1.0;
+      freq: f32 = 440.0 * (math::pow(2.0, (note as f32 - 69.0) / 12.0) as f32);
+      samples: s32 = (sample_rate * duration) as s32;
+      data: *mut f32 = allocator.allocate(samples * sizeof(f32));
+
+      for i in 0..samples {
+        t: f32 = i as f32 / sample_rate;
+        amp: f32 = velocity as f32 / 127.0;
+        data![i] = amp * (math::sin(2.0 * 3.14159265 * freq * t) as f32);
+      }
+      return Some(Signal.{
+        data: data,
+        length: samples,
+      });
+    } 
+
+    println("released or no status.");
+
+    return None();
+  }
+}
+
+extern fn snd_pcm_open(handle: *mut *mut void, name: *const u8, stream: s32, mode: s32) -> s32;
+extern fn snd_pcm_set_params(handle: *mut void, format: s32, access: s32, channels: u32, rate: u32, soft_resample: s32, latency: u32) -> s32;
+extern fn snd_pcm_writei(handle: *mut void, buffer: *const void, size: s32) -> s32;
+extern fn snd_pcm_close(handle: *mut void) -> s32;
+extern fn snd_pcm_prepare(handle: *mut void) -> s32;
+// ALSA constants (define as needed)
+const SND_PCM_STREAM_PLAYBACK: s32 = 0;
+const SND_PCM_FORMAT_FLOAT_LE: s32 = 10; // 32-bit float, little-endian
+const SND_PCM_ACCESS_RW_INTERLEAVED: s32 = 3;
+
+fn main() {
+  struct Context {
+    instruments: List!<dyn Instrument>,
+    pcm: *mut void,
+  }
+
+  impl Context {
+    fn init_pcm(*mut self) -> bool {
+      if snd_pcm_open(&mut self.pcm, "default"c, SND_PCM_STREAM_PLAYBACK, 0) != 0 {
+        fmt::println("Failed to open ALSA device");
+        return false;
+      }
+      snd_pcm_set_params(self.pcm, SND_PCM_FORMAT_FLOAT_LE, SND_PCM_ACCESS_RW_INTERLEAVED, 1, 44100, 1, 500000);
+      return true;
+    }
+  }
+
+  impl Destroy for Context {
+    fn destroy(*mut self, recursive: bool = false) {
+      snd_pcm_close(self.pcm);
+      self.instruments.destroy();
+    }
+  }
+
+  using mut ctx: Context;
+
+  mut sine_board: SineBoard;
+  ctx.instruments.push(dynof(&mut sine_board, Instrument));
+
+  if !ctx.init_pcm() {
+    return;
+  }
+
+  fn on_midi_event(status: s32, note: s32, velocity: s32, user_arg: *mut void) -> bool {
+    context: *mut Context = user_arg;
+
+    using mut alloc: TrackingAllocator;
+    mut allocator := dynof(&mut alloc, Allocator);
+    using mut signals: List!<Signal>;
+
+    for instrument in context.instruments {
+      if instrument.handle_midi_event(status, note, velocity, allocator) is Option!<Signal>::Some(signal) {
+        signals.push(signal);
+      }
+    }
+
+    fn play_signal(context: *mut Context, signal: Signal) {
+      snd_pcm_prepare(context.pcm);
+      snd_pcm_writei(context.pcm, signal.data, signal.length);
+    }
+
+    for signal in signals {
+      println("got signal");
+      play_signal(context, signal);
+    }
+
+    return true;
+  }
+
+  fn on_init(user_arg: *mut void) -> bool {
+    context: *mut Context = user_arg;    
+    for instrument in context.instruments {
+      if !instrument.initialize() {
+        // todo: throw an error or some shit.
+        fmt::println("failed to initialize instrumet");
+      }
+    }
+    return true;
+  }
+
+  midi::begin_midi_hook("/dev/snd/midiC1D0", &mut on_init, &mut on_midi_event, &mut ctx);
+}
