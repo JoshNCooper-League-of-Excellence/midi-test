@@ -64,6 +64,25 @@ fn pitch_from_midi_note_id(note_id: s32) -> f32 {
   return 440.0 * math::pow(2.0, (note_id as f32 - 69.0) / 12.0);
 }
 
+fn midi_note_printer_callback(status: s32, note_id: s32, velocity: s32) -> bool {
+  status_string: str = if status == MIDI_NOTE_OFF {
+    return "released";
+  } else if status == MIDI_NOTE_ON{
+    return "pressed";
+  } else {
+    return "NULL";
+  }
+
+  if status_string == "NULL" {
+    std::printf("(?) v=%d\n", velocity);
+    return true;
+  }
+
+  using note_name := format("%%", (note_names[note_id % 12], note_id / 12 - 1), fmt::FormatOptions.{});
+  printlnf("% % v=%", (note_name, status_string, velocity, fmt::FormatOptions.{}));
+  return true;
+}
+
 fn begin_midi_hook(mut device: str, init_callback: fn(*mut void) -> bool, midi_callback: MidiCallback, user_arg: *mut void) {
   mut fd := 0;
   if (fd = std::open(device.data, O_RDWR, S_IRUSR | S_IWUSR)) == -1 {
@@ -83,6 +102,9 @@ fn begin_midi_hook(mut device: str, init_callback: fn(*mut void) -> bool, midi_c
   while (bytes_read = std::read(fd, buf, N_BYTES)) != -1 {
     for idx in 0..(bytes_read/3) {
       if !midi_callback(buf[idx+0], buf[idx+1], buf[idx+2], user_arg) {
+        return;
+      }
+      if !midi_note_printer_callback(buf[idx+0], buf[idx+1], buf[idx+2]) {
         return;
       }
     }

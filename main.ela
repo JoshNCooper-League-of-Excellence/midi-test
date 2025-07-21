@@ -15,10 +15,10 @@ extern fn snd_pcm_close(handle: *mut void) -> s32;
 extern fn snd_pcm_prepare(handle: *mut void) -> s32;
 
 const SND_PCM_STREAM_PLAYBACK: s32 = 0;
-const SND_PCM_FORMAT_FLOAT_LE: s32 = 10;
+const SND_PCM_FORMAT_FLOAT_LE: s32 = 14;
 const SND_PCM_ACCESS_RW_INTERLEAVED: s32 = 3;
 
-const BLOCK_SIZE: s32 = 1024;
+const BLOCK_SIZE: s32 = 256;
 const OUTPUT_GAIN: f32 = 0.2;
 
 struct SignalQueue {
@@ -64,7 +64,7 @@ impl Context {
       return false;
     }
     self.sample_rate = sample_rate;
-    snd_pcm_set_params(self.pcm, SND_PCM_FORMAT_FLOAT_LE, SND_PCM_ACCESS_RW_INTERLEAVED, 1, sample_rate, 1, 100_000);
+    snd_pcm_set_params(self.pcm, SND_PCM_FORMAT_FLOAT_LE, SND_PCM_ACCESS_RW_INTERLEAVED, 1, sample_rate, 1, 30_000);
     return true;
   }
 }
@@ -88,9 +88,6 @@ fn lowpass_filter(out: *mut f32, n: s32, smoothing: f32) {
 }
 
 fn mix_instruments(context: *mut Context, out: *mut f32, n: s32) {
-  for i in 0..n {
-    out![i] = 0.0;
-  }
   for instrument in context.instruments.iter_mut() {
     mut voices := instrument.get_active_voices();
     instrument.mix_voices(out, n, context.sample_rate);
@@ -130,20 +127,19 @@ fn sine_generator(type_erased_voice: *mut void) -> f32 {
     }
   }
 
-  velocity := voice.velocity * voice.velocity;
   phase := voice.phase;
-  sample := velocity * math::cos(phase) * math::sin(phase) * 0.001;
+  sample := voice.velocity * math::cos(phase) as f32;
   return sample;
 }
 
-const MIN_VALUE := 0.0000000001;
+const MIN_VALUE := 0.02;
 
 struct SineBoard {
   voices: List!<Voice>,
   attack:  f32 = MIN_VALUE,
   decay:   f32 = 1,
   sustain: f32 = 1,
-  release: f32 = MIN_VALUE,
+  release: f32 = 0,
 }
 
 impl Instrument for SineBoard {
