@@ -1,4 +1,4 @@
-#c_flags "-lasound"
+#c_flags " -lasound "
 
 import fmt::*;
 import midi;
@@ -7,6 +7,7 @@ import jst::{
   Signal
 };
 import math;
+import pthread::*;
 
 struct SineBoard {}
 impl Instrument for SineBoard {
@@ -43,80 +44,219 @@ extern fn snd_pcm_set_params(handle: *mut void, format: s32, access: s32, channe
 extern fn snd_pcm_writei(handle: *mut void, buffer: *const void, size: s32) -> s32;
 extern fn snd_pcm_close(handle: *mut void) -> s32;
 extern fn snd_pcm_prepare(handle: *mut void) -> s32;
-// ALSA constants (define as needed)
+
 const SND_PCM_STREAM_PLAYBACK: s32 = 0;
-const SND_PCM_FORMAT_FLOAT_LE: s32 = 10; // 32-bit float, little-endian
+const SND_PCM_FORMAT_FLOAT_LE: s32 = 10;
 const SND_PCM_ACCESS_RW_INTERLEAVED: s32 = 3;
 
-fn main() {
-  struct Context {
-    instruments: List!<dyn Instrument>,
-    pcm: *mut void,
-  }
+struct SignalQueue {
+  queue: List!<Signal>,
+  mutex: pthread::Mutex = pthread::Mutex::new(),
+}
 
-  impl Context {
-    fn init_pcm(*mut self) -> bool {
-      if snd_pcm_open(&mut self.pcm, "default"c, SND_PCM_STREAM_PLAYBACK, 0) != 0 {
-        fmt::println("Failed to open ALSA device");
-        return false;
-      }
-      snd_pcm_set_params(self.pcm, SND_PCM_FORMAT_FLOAT_LE, SND_PCM_ACCESS_RW_INTERLEAVED, 1, 44100, 1, 500000);
-      return true;
+impl Destroy for SignalQueue {
+  fn destroy(*mut self, recursive: bool = true) {
+    self.queue.destroy(recursive);
+    self.mutex.destroy();
+  }
+}
+
+impl SignalQueue {
+  fn push(*mut self, signal: Signal) {
+    self.mutex.lock();
+    self.queue.push(signal);
+    self.mutex.unlock();
+  }
+  fn pop(*mut self) -> Option!<Signal> {
+    self.mutex.lock();
+    signal := if self.queue.length > 0 {
+      return Some(self.queue.pop_front());
+    } else {
+      return None();
+    };
+    self.mutex.unlock();
+    return signal;
+  }
+}
+
+struct Voice {
+  freq: f32,
+  velocity: f32,
+  phase: f32,
+  phase_inc: f32,
+  envelope: f32,
+  env_state: s32,
+  release_start: f32,
+  released: bool,
+}
+
+impl Voice {
+  fn new(freq: f32, velocity: f32, sample_rate: f32) -> Self {
+    return Voice.{
+      freq: freq,
+      velocity: velocity,
+      phase: math::Random::next(1.0) * 2.0 * 3.14159265, // full 0..2pi
+      phase_inc: 2.0 * 3.14159265 * freq / sample_rate,
+      envelope: 0.0,
+      env_state: 0,
+      release_start: 0.0,
+      released: false,
+    };
+  }
+}
+
+struct Context {
+  instruments: List!<dyn Instrument>,
+  pcm: *mut void,
+  voices: List!<Voice>,
+  sample_rate: f32,
+}
+
+impl Context {
+  fn init_pcm(*mut self) -> bool {
+    if snd_pcm_open(&mut self.pcm, "default"c, SND_PCM_STREAM_PLAYBACK, 0) != 0 {
+      fmt::println("Failed to open ALSA device");
+      return false;
     }
+    // Set channels to 1 (mono)
+    snd_pcm_set_params(self.pcm, SND_PCM_FORMAT_FLOAT_LE, SND_PCM_ACCESS_RW_INTERLEAVED, 1, 44100, 1, 500000);
+    return true;
   }
+}
 
-  impl Destroy for Context {
-    fn destroy(*mut self, recursive: bool = false) {
+impl Destroy for Context {
+  fn destroy(*mut self, recursive: bool = true) {
+    self.instruments.destroy(recursive);
+    self.voices.destroy(recursive);
+    if self.pcm != null {
       snd_pcm_close(self.pcm);
-      self.instruments.destroy();
+      self.pcm = null;
     }
   }
+}
 
-  using mut ctx: Context;
+const ATTACK: f32 = 0.01;
+const DECAY: f32 = 0.001;
+const SUSTAIN: f32 = 0.1;
+const RELEASE: f32 = 0.05;
+const BLOCK_SIZE: s32 = 256;
+const OUTPUT_GAIN: f32 = 1;
 
+fn mix_voices(context: *mut Context, out: *mut f32, n: s32) {
+  for i in 0..n {
+    out![i] = 0.0;
+  }
+  mut active_voices := 0;
+  for voice in context.voices.iter_mut() {
+    if voice.env_state != 4 {
+      active_voices += 1;
+    }
+    for i in 0..n {
+      if voice.env_state == 0 {
+        voice.envelope += 1.0 / (ATTACK * context.sample_rate);
+        if voice.envelope >= 1.0 {
+          voice.envelope = 1.0;
+          voice.env_state = 1;
+        }
+      } else if voice.env_state == 1 {
+        voice.envelope -= (1.0 - SUSTAIN) / (DECAY * context.sample_rate);
+        if voice.envelope <= SUSTAIN {
+          voice.envelope = SUSTAIN;
+          voice.env_state = 2;
+        }
+      } else if voice.env_state == 3 {
+        voice.envelope -= SUSTAIN / (RELEASE * context.sample_rate);
+        if voice.envelope <= 0.0 {
+          voice.envelope = 0.0;
+          voice.env_state = 4;
+        }
+      }
+      if voice.env_state != 4 {
+        sample := voice.velocity * voice.envelope * math::sin(voice.phase);
+        out![i] += sample;
+      }
+      voice.phase += voice.phase_inc;
+      if voice.phase > 2.0 * 3.14159265 {
+        voice.phase -= 2.0 * 3.14159265;
+      }
+    }
+  }
+  if active_voices > 0 {
+    fmt::printlnf("Active voices: %", (active_voices,), fmt::FormatOptions.{});
+  }
+
+  context.voices.retain(fn (voice: *Voice) -> bool {
+    return voice.env_state != 4;
+  });
+}
+
+fn play_audio_block(context: *mut Context) {
+  mut buffer: [f32; BLOCK_SIZE];
+  mix_voices(context, buffer, BLOCK_SIZE);
+  for i in 0..BLOCK_SIZE {
+    buffer[i] *= OUTPUT_GAIN;
+  }
+
+  if (buffer[0] != 0 && buffer[1] != 0) {
+    fmt::printlnf("Buffer[0..8]: % % % % % % % %", (
+      buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7]
+    ), fmt::FormatOptions.{});
+  }
+
+
+  // snd_pcm_prepare(context.pcm);
+  written := snd_pcm_writei(context.pcm, buffer, BLOCK_SIZE);
+  if written < 0 {
+    fmt::printlnf("ALSA write error: %", (written,), FormatOptions.{});
+  }
+}
+
+fn audio_thread_main(arg: *mut void) {
+  context: *mut Context = arg;
+  while true {
+    play_audio_block(context);
+    std::c::usleep(1000);
+  }
+}
+
+fn on_midi_event(status: s32, note: s32, velocity: s32, user_arg: *mut void) -> bool {
+  context: *mut Context = user_arg;
+  freq: f32 = 440.0 * math::pow(2.0, (note as f32 - 69.0) / 12.0);
+  if status == 0x90 && velocity > 0 {
+  
+    context.voices.push(Voice::new(freq, velocity as f32 / 127.0, context.sample_rate));
+  } else if (status == 0x80) || (status == 0x90 && velocity == 0) {
+  
+    for voice in context.voices.iter_mut() {
+      if math::abs(voice.freq - freq) < 1.0 {
+        voice.env_state = 3;
+      }
+    }
+  }
+  return true;
+}
+
+fn main() {
+  using mut ctx: Context = .{
+    sample_rate: 44100.0,
+
+  };
   mut sine_board: SineBoard;
   ctx.instruments.push(dynof(&mut sine_board, Instrument));
-
   if !ctx.init_pcm() {
     return;
   }
-
-  fn on_midi_event(status: s32, note: s32, velocity: s32, user_arg: *mut void) -> bool {
-    context: *mut Context = user_arg;
-
-    using mut alloc: TrackingAllocator;
-    mut allocator := dynof(&mut alloc, Allocator);
-    using mut signals: List!<Signal>;
-
-    for instrument in context.instruments {
-      if instrument.handle_midi_event(status, note, velocity, allocator) is Option!<Signal>::Some(signal) {
-        signals.push(signal);
-      }
-    }
-
-    fn play_signal(context: *mut Context, signal: Signal) {
-      snd_pcm_prepare(context.pcm);
-      snd_pcm_writei(context.pcm, signal.data, signal.length);
-    }
-
-    for signal in signals {
-      println("got signal");
-      play_signal(context, signal);
-    }
-
-    return true;
-  }
-
+  mut audio_thread: Thread;
+  audio_thread = Thread::start(&mut audio_thread_main, &mut ctx);
   fn on_init(user_arg: *mut void) -> bool {
-    context: *mut Context = user_arg;    
+    context: *mut Context = user_arg;
     for instrument in context.instruments {
       if !instrument.initialize() {
-        // todo: throw an error or some shit.
-        fmt::println("failed to initialize instrumet");
+        fmt::println("failed to initialize instrument");
       }
     }
     return true;
   }
-
   midi::begin_midi_hook("/dev/snd/midiC1D0", &mut on_init, &mut on_midi_event, &mut ctx);
+
 }
