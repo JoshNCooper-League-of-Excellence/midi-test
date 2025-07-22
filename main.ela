@@ -1,13 +1,3 @@
-#c_flags " -lasound "
-import fmt::*;
-import midi::*;
-import math;
-import pthread::*;
-import jst::{
-  Instrument,
-};
-import fs::Directory;
-import sineboard::*;
 
 extern fn snd_pcm_open(handle: *mut *mut void, name: *const u8, stream: s32, mode: s32) -> s32;
 extern fn snd_pcm_set_params(handle: *mut void, format: s32, access: s32, channels: u32, rate: u32, soft_resample: s32, latency: u32) -> s32;
@@ -19,8 +9,21 @@ const SND_PCM_STREAM_PLAYBACK: s32 = 0;
 const SND_PCM_FORMAT_FLOAT_LE: s32 = 14;
 const SND_PCM_ACCESS_RW_INTERLEAVED: s32 = 3;
 
-const BLOCK_SIZE: s32 = 32;
+const BLOCK_SIZE: s32 = 128;
 const OUTPUT_GAIN: f32 = 0.2;
+
+#c_flags " -lasound "
+import fmt::*;
+import midi::*;
+import math;
+import pthread::*;
+import jst::{
+  Instrument,
+  Effect
+};
+import fs::Directory;
+import sineboard::*;
+
 
 struct SignalQueue {
   mutex: pthread::Mutex = pthread::Mutex::new(),
@@ -28,6 +31,7 @@ struct SignalQueue {
 
 struct Context {
   instruments: List!<dyn Instrument>,
+  effects: List!<dyn Effect>,
   pcm: *mut void,
   sample_rate: u32,
 }
@@ -54,16 +58,17 @@ impl Destroy for Context {
   }
 }
 
-fn assemble_master_mix(context: *mut Context, out: *mut f32, n: s32) {
+fn master_mix(context: *mut Context, mut data: mut [f32]) {
   for instrument in context.instruments.iter_mut() {
-    instrument.mix_voices(out, n, context.sample_rate);
+    instrument.mix_voices(data, context.sample_rate);
   }
-  // run FX here.
-  for i in 0..n {
-    // out![i] = math::clamp!<f32>(out![i], STATIC_LIMITER.0, STATIC_LIMITER.1);
+  
+  for effect in context.effects.iter_mut() {
+    effect.process(data);
   }
-  for i in 0..n {
-    out![i] *= OUTPUT_GAIN;
+  
+  for i in 0..data.length {
+    data[i] *= OUTPUT_GAIN;
   }
 }
 
@@ -71,7 +76,10 @@ fn audio_thread_main(arg: *mut void) {
   context: *mut Context = arg;
   while true {
     mut buffer: [f32; BLOCK_SIZE];
-    assemble_master_mix(context, buffer, BLOCK_SIZE);
+    master_mix(context, .{
+      data: buffer as *mut f32,
+      length: BLOCK_SIZE,
+    });
     mut written: s32;
     if (written = snd_pcm_writei(context.pcm, buffer, BLOCK_SIZE)) < 0 {
       snd_pcm_prepare(context.pcm); 
@@ -143,6 +151,8 @@ fn main() {
   mut sine_board: SineBoard;
   ctx.instruments.push(dynof(&mut sine_board, Instrument));
 
+  mut echo: Echo;
+  ctx.effects.push(dynof(&mut echo, Effect));
 
   using midi_device_file := fmt::format("/dev/snd/%", (get_midi_device_name(),), FormatOptions.{});
   mut audio_thread := Thread::start(&mut audio_thread_main, &mut ctx);

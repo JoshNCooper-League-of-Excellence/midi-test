@@ -37,7 +37,6 @@ const ENVELOPE_STATE_SUSTAIN  := 2;
 const ENVELOPE_STATE_RELEASE  := 3;
 const ENVELOPE_STATE_INACTIVE := 4;
 
-
 trait Instrument {
   // This gets called after 'generate_new_voice' so you can leave the default voice generation, and still customize.
   fn set_voice_parameters(*mut self, freq: f32, voice: *mut Voice) {
@@ -125,9 +124,9 @@ trait Instrument {
     }
   }
 
-  fn mix_voices(*mut self, out: *mut f32, n: s32, sample_rate: u32) {
+  fn mix_voices(*mut self, out: mut [f32], sample_rate: u32) {
     self.apply_envelope(sample_rate);
-    for i in 0..n {
+    for i in 0..out.length {
       mut sum := 0.0;
       mut active := 0;
       for voice in self.get_active_voices().iter_mut() {
@@ -137,11 +136,15 @@ trait Instrument {
         }
       }
       if active > 0 {
-        out![i] += sum;
+        out.data![i] += sum;
       }
     }
     self.voices.retain(fn (voice: *Voice) -> bool {
       return voice.env_state != 4;
     });
   }
+}
+
+trait Effect {
+  fn process(*mut self, mut data: mut [f32]);
 }
