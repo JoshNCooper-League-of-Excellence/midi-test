@@ -1,12 +1,13 @@
+import jst::*;
 
-fn fm_generator(type_erased_voice: *mut void) -> f32 {
-  f := sine_generator(type_erased_voice);
-  m := sine_generator(type_erased_voice);
-
-  voice: *mut Voice = type_erased_voice;
-  mod_index: f32 = f * math::atan2(f, m);
+struct SineBoard;
+fn fm_generator(voice: *mut Voice) -> f32 {
+  f := sine_generator(voice);
+  m := sine_generator(voice);
+  mod_index: f32 = f * math::atan2(f, m) - 1;
   carrier_phase := voice.phase + mod_index * m;
   sample := voice.velocity * voice.envelope * math::cos(carrier_phase) as f32;
+  instrument: *mut SineBoard = voice.user_arg;
   return sample;
 }
 
@@ -16,26 +17,16 @@ struct SineBoard {
     attack: 0.001,
     release: 0.001,
   },
+  pitch_bend: f32,
 }
 
 impl Instrument for SineBoard {
-  fn handle_midi_event(*mut self, status: s32, note: s32, velocity: s32, sample_rate: f32) {
-    if status == 0x90 && velocity > 0 {
-      freq: f32 = pitch_from_midi_note_id(note);
-      self.voices.push(Voice.{
-        freq: freq,
-        velocity: velocity as f32 / 127.0,
-        phase_inc: 2.0 * 3.14159265 * freq / sample_rate,
-        released: false,
-        generator: &mut fm_generator,
-      });
-    } else if (status == 0x80) || (status == 0x90 && velocity == 0) {
-      freq: f32 = pitch_from_midi_note_id(note);
-      for voice in self.voices.iter_mut() {
-        if math::abs(voice.freq - freq) < 1.0 {
-          voice.env_state = 3;
-        }
-      }
+  fn set_voice_parameters(*mut self, freq: f32, voice: *mut Voice) {
+    if freq < 130 {
+      voice.generator = &mut sine_generator;
+      voice.phase_step *= 2;
+    } else {
+      voice.generator = &mut fm_generator;
     }
   }
 }

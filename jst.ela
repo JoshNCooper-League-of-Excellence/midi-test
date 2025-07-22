@@ -1,16 +1,78 @@
-struct Signal {
-  data : *mut f32,
-  length: s32,
+// basic sine oscillator / sample generator.
+fn sine_generator(voice: *mut Voice) -> f32 {
+  { // advance wave.
+    voice.phase += voice.phase_step;
+    if voice.phase > 2.0 * 3.14159265 {
+      voice.phase -= 2.0 * 3.14159265;
+    }
+  }
+
+  phase := voice.phase;
+  sample := voice.velocity * voice.envelope * math::cos(phase) as f32;
+  return sample;
 }
 
+
 trait Instrument {
-  fn handle_midi_event(*mut self, status: s32, note: s32, velocity: s32, sample_rate: f32);
+  // This gets called after 'generate_new_voice' so you can leave the default voice generation, and still customize.
+  fn set_voice_parameters(*mut self, freq: f32, voice: *mut Voice) {
+    voice.generator = &mut sine_generator;
+  }
+
+  // this is the root of all the voices for your instruments. for most basic polyphonic/monophonic synths, this does the trick.
+  fn generate_new_voice(*mut self, freq: f32, velocity_normalized: f32, phase_step: f32) -> Voice {
+    return .{
+      velocity: velocity_normalized,
+      freq: freq,
+      phase_step: phase_step,
+    };
+  }
+
+  fn on_pitch_bend_changed(*mut self, value: s32) {
+    for voice in self.voices.iter_mut() {
+      normalized_value := value as f32;
+      self.pitch_bend = normalized_value;
+    }
+  }
+
+  fn handle_midi_event(*mut self, status: s32, arg0: s32, arg1: s32, sample_rate: f32) {
+    // TODO: instead of calling the various methods liek generate_new_voice and set_voice_parameters,
+    // this should all be one method where the user _could_ put many voices per note pressed, or whatever.
+    // the on note released will almost never change (I think, except some custom strange situations)
+    // but we can also have a "callback" style situation where the user can override a default or fulfill an
+    // implementation for that too.
+    note, velocity := (arg0, arg1);
+    if status == MidiStatus::NoteOn && velocity > 0 { // On note pressed.
+      freq: f32 = pitch_from_midi_note_id(note);
+      phase_step := 1.0 * 3.14159265 * freq / sample_rate;
+      mut voice: Voice = self.generate_new_voice(freq, velocity as f32 / 127.0, phase_step);
+      voice.id = note; // ! Never change this ID. see the definition.
+      self.set_voice_parameters(freq, &mut voice);
+      self.voices.push(voice);
+    } else if (status == MidiStatus::NoteOff) || (status == MidiStatus::NoteOn && velocity == 0) { // On note release.
+      freq: f32 = pitch_from_midi_note_id(note);
+      for voice in self.voices.iter_mut() {
+        if voice.id == note {
+          voice.env_state = 3;
+        }
+      }
+    }
+
+    if status == MidiStatus::PitchBend {
+      // 8192 == 0, no bend
+      value := arg0 | (arg1 << 7);
+      self.on_pitch_bend_changed(value);
+    }
+  }
+  
   fn initialize(*mut self) -> bool {
     return true;
   }
+
   fn get_active_voices(*mut self) -> mut [Voice] {
     return self.voices.as_slice_mut();
   }
+
   fn apply_envelope(*mut self, sample_rate: f32) {
     attack, decay, sustain, release := self.envelope;
     for voice in self.voices.iter_mut() {
@@ -35,6 +97,7 @@ trait Instrument {
       }
     }
   }
+
   fn mix_voices(*mut self, out: *mut f32, n: s32, sample_rate: u32) {
     self.apply_envelope(sample_rate);
     for i in 0..n {

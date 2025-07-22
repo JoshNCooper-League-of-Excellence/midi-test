@@ -5,7 +5,6 @@ import math;
 import pthread::*;
 import jst::{
   Instrument,
-  Signal
 };
 import fs::Directory;
 import sineboard::*;
@@ -20,37 +19,11 @@ const SND_PCM_STREAM_PLAYBACK: s32 = 0;
 const SND_PCM_FORMAT_FLOAT_LE: s32 = 14;
 const SND_PCM_ACCESS_RW_INTERLEAVED: s32 = 3;
 
-const BLOCK_SIZE: s32 = 256;
+const BLOCK_SIZE: s32 = 32;
 const OUTPUT_GAIN: f32 = 0.2;
 
 struct SignalQueue {
-  queue: List!<Signal>,
   mutex: pthread::Mutex = pthread::Mutex::new(),
-}
-
-impl Destroy for SignalQueue {
-  fn destroy(*mut self, recursive: bool = true) {
-    self.queue.destroy(recursive);
-    self.mutex.destroy();
-  }
-}
-
-impl SignalQueue {
-  fn push(*mut self, signal: Signal) {
-    self.mutex.lock();
-    self.queue.push(signal);
-    self.mutex.unlock();
-  }
-  fn pop(*mut self) -> Option!<Signal> {
-    self.mutex.lock();
-    signal := if self.queue.length > 0 {
-      return Some(self.queue.pop_front());
-    } else {
-      return None();
-    };
-    self.mutex.unlock();
-    return signal;
-  }
 }
 
 struct Context {
@@ -80,7 +53,6 @@ impl Destroy for Context {
     }
   }
 }
-
 
 fn assemble_master_mix(context: *mut Context, out: *mut f32, n: s32) {
   for instrument in context.instruments.iter_mut() {
