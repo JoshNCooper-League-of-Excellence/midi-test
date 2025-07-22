@@ -146,5 +146,6 @@ trait Instrument {
 }
 
 trait Effect {
+  fn init(*mut self);
   fn process(*mut self, mut data: mut [f32]);
 }

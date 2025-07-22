@@ -45,25 +45,32 @@ impl Instrument for SineBoard {
   }
 }
 
-/* 
-  Shitty chat gpt echo, super shit
-*/
-const ECHO_BUFFER_LEN: s32 = 48000;
+const ECHO_BUFFER_INITIAL_LENGTH: s32 = 48000;
+
 struct Echo {
-  buffer: [f32; ECHO_BUFFER_LEN],
+  buffer: List!<f32>,
   index: s32 = 0,
-  delay_samples: s32 = 12000 * 4,
+  delay_samples: s32 = 36000,
   depth: f32 = 0.7,
+  repetitions: s32 = 4,
 }
+
 impl Effect for Echo {
+  fn init(*mut self) {
+    self.buffer.initialize(self.delay_samples * self.repetitions);
+  }
   fn process(*mut self, mut data: mut [f32]) {
     for i in 0..data.length {
-      delayed_idx := (self.index + ECHO_BUFFER_LEN - self.delay_samples) % ECHO_BUFFER_LEN;
-      delayed := self.buffer[delayed_idx];
-      out := data[i] + delayed * self.depth;
+      mut out := data[i];
+      for n in 1..self.repetitions + 1 {
+        tap_delay := self.delay_samples * n;
+        tap_idx := (self.index + self.buffer.length - tap_delay) % self.buffer.length;
+        tap := self.buffer[tap_idx];
+        out += tap * (self.depth / (n as f32));
+      }
       self.buffer[self.index] = data[i];
       data[i] = out;
-      self.index = (self.index + 1) % ECHO_BUFFER_LEN;
+      self.index = (self.index + 1) % self.buffer.length;
     }
   }
 }
