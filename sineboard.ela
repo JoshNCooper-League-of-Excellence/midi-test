@@ -1,6 +1,8 @@
 import jst::*;
 import map::*;
 
+extern fn pow(base: f64, exponent: f64) -> f64;
+
 struct SineBoard {
   voices: List!<Voice>,
   envelope: Envelope = .{
@@ -51,7 +53,7 @@ struct Echo {
   buffer: List!<f32>,
   index: s32 = 0,
   delay_samples: s32 = 36000,
-  depth: f32 = 0.7,
+  depth: f32 = 0.5,
   repetitions: s32 = 4,
 }
 
@@ -66,8 +68,39 @@ impl Effect for Echo {
         tap_delay := self.delay_samples * n;
         tap_idx := (self.index + self.buffer.length - tap_delay) % self.buffer.length;
         tap := self.buffer[tap_idx];
-        out += tap * (self.depth / (n as f32));
+        out += tap * pow(self.depth as f64, n as f64);
       }
+      self.buffer[self.index] = data[i];
+      data[i] = out;
+      self.index = (self.index + 1) % self.buffer.length;
+    }
+  }
+}
+struct Chorus {
+  buffer: List!<f32>,
+  index: s32 = 0,
+  delay_samples: s32 = 1000,
+  depth: f32 = 100,
+  freq: f32 = 0.5,
+  phase: f32 = 0,
+}
+
+impl Effect for Chorus {
+  fn init(*mut self) {
+    self.buffer.initialize(self.delay_samples + self.depth);
+  }
+  fn process(*mut self, mut data: mut [f32]) {
+    phase_step := 1.0 * 3.14159265 * self.freq / 44100.0;
+    for i in 0..data.length {
+      self.phase += phase_step;
+      if self.phase > 2.0 * 3.14159265 {
+        self.phase -= 2.0 * 3.14159265;
+      }
+      difference := math::cos(self.phase) as f32 * self.depth;
+      mut out := data[i];
+      sample_idx := (self.index + self.delay_samples + difference as s32) % self.buffer.length;
+      sample := self.buffer[sample_idx];
+      out += sample;
       self.buffer[self.index] = data[i];
       data[i] = out;
       self.index = (self.index + 1) % self.buffer.length;
