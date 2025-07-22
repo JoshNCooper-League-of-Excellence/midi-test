@@ -1,22 +1,55 @@
-// basic sine oscillator / sample generator.
-fn sine_generator(voice: *mut Voice) -> f32 {
-  { // advance wave.
-    voice.phase += voice.phase_step;
-    if voice.phase > 2.0 * 3.14159265 {
-      voice.phase -= 2.0 * 3.14159265;
-    }
-  }
+import map::*;
+struct Voice;
+struct InstrumentParameters;
 
-  phase := voice.phase;
-  sample := voice.velocity * voice.envelope * math::cos(phase) as f32;
-  return sample;
+type SampleGenerator :: fn(*mut Voice, *mut InstrumentParameters) -> f32;
+
+struct Voice {
+  freq: f32,
+  velocity: f32,
+  phase: f32,
+  phase_step: f32,
+  envelope: f32,
+  env_state: s32,
+  release_start: f32,
+  released: bool,
+  id: s32, // ! Never change this value!! it will only cause bad things and no fun effects!!
+  generator: SampleGenerator,
+  user_arg: *mut void, // typically a '*mut dyn Instrument', but without out of order compilation we can't figure out a way to get that to work without type erasure.
 }
+
+struct Envelope {
+  attack:  f32  = 0,
+  decay:   f32  = 1,
+  sustain: f32  = 1,
+  release: f32  = 0
+}
+
+// TODO: add a bunch of CC crap here.
+struct InstrumentParameters {
+  pitch_bend: f32 = 1.0,
+  mod: f32 = 0.0
+}
+
+const ENVELOPE_STATE_ATTACK   := 0;
+const ENVELOPE_STATE_DECAY    := 1;
+const ENVELOPE_STATE_SUSTAIN  := 2;
+const ENVELOPE_STATE_RELEASE  := 3;
+const ENVELOPE_STATE_INACTIVE := 4;
 
 
 trait Instrument {
   // This gets called after 'generate_new_voice' so you can leave the default voice generation, and still customize.
   fn set_voice_parameters(*mut self, freq: f32, voice: *mut Voice) {
-    voice.generator = &mut sine_generator;
+    voice.generator = fn(voice: *mut Voice, parameters: *mut InstrumentParameters) -> f32 { // basic sine generator.
+      voice.phase += voice.phase_step * (1 + parameters.pitch_bend);
+      if voice.phase > 2.0 * 3.14159265 {
+        voice.phase -= 2.0 * 3.14159265;
+      }
+      phase := voice.phase;
+      sample := voice.velocity * voice.envelope * math::cos(phase) as f32;
+      return sample;
+    };
   }
 
   // this is the root of all the voices for your instruments. for most basic polyphonic/monophonic synths, this does the trick.
@@ -25,14 +58,8 @@ trait Instrument {
       velocity: velocity_normalized,
       freq: freq,
       phase_step: phase_step,
+      user_arg: self,
     };
-  }
-
-  fn on_pitch_bend_changed(*mut self, value: s32) {
-    for voice in self.voices.iter_mut() {
-      normalized_value := value as f32;
-      self.pitch_bend = normalized_value;
-    }
   }
 
   fn handle_midi_event(*mut self, status: s32, arg0: s32, arg1: s32, sample_rate: f32) {
@@ -59,9 +86,9 @@ trait Instrument {
     }
 
     if status == MidiStatus::PitchBend {
-      // 8192 == 0, no bend
-      value := arg0 | (arg1 << 7);
-      self.on_pitch_bend_changed(value);
+      unscaled_value: f32 = (arg0 | (arg1 << 7));
+      mut normalized_value := (unscaled_value - 8192.0) / s16::max_value() as f32;
+      self.parameters.pitch_bend = normalized_value + 1;
     }
   }
   
@@ -105,7 +132,7 @@ trait Instrument {
       mut active := 0;
       for voice in self.get_active_voices().iter_mut() {
         if voice.env_state != ENVELOPE_STATE_INACTIVE {
-          sum += voice.generator(voice);
+          sum += voice.generator(voice, &mut self.parameters);
           active += 1;
         }
       }

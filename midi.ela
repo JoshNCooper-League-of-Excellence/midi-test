@@ -5,51 +5,6 @@ module std {
   extern fn close(__fd: s32) -> s32;
 }
 
-struct Voice;
-type SampleGenerator :: fn(*mut Voice) -> f32;
-struct Voice {
-  freq: f32,
-  velocity: f32,
-  phase: f32,
-  phase_step: f32,
-  envelope: f32,
-  env_state: s32,
-  release_start: f32,
-  released: bool,
-  id: s32, // ! Never change this value!! it will only cause bad things and no fun effects!!
-  generator: SampleGenerator,
-  user_arg: *mut void,
-}
-
-impl Voice {
-  fn new(freq: f32, velocity: f32, sample_rate: f32, generator: SampleGenerator) -> Self {
-    return Voice.{
-      freq: freq,
-      velocity: velocity,
-      phase: 0.0,
-      phase_step: 2.0 * 3.14159265 * freq / sample_rate,
-      envelope: 0.0,
-      env_state: 0,
-      release_start: 0.0,
-      released: false,
-      generator: generator,
-    };
-  }
-}
-
-struct Envelope {
-  attack:  f32  = 0,
-  decay:   f32  = 1,
-  sustain: f32  = 1,
-  release: f32  = 0
-}
-
-const ENVELOPE_STATE_ATTACK   := 0;
-const ENVELOPE_STATE_DECAY    := 1;
-const ENVELOPE_STATE_SUSTAIN  := 2;
-const ENVELOPE_STATE_RELEASE  := 3;
-const ENVELOPE_STATE_INACTIVE := 4;
-
 const O_RDWR:   s32 = 0x2;
 const S_IRUSR: s32 = 0x100;
 const S_IWUSR: s32 = 0x80;
@@ -98,7 +53,7 @@ fn midi_note_printer_callback(status: s32, note_id: s32, velocity: s32) -> bool 
 fn begin_midi_hook(mut device: str, init_callback: fn(*mut void) -> bool, midi_callback: MidiCallback, user_arg: *mut void) {
   mut fd := 0;
   if (fd = std::open(device.data, O_RDWR, S_IRUSR | S_IWUSR)) == -1 {
-    std::printf("failed to open midi\n");
+    std::printf("failed to open midi device\n");
     return;
   }
   defer std::close(fd);
@@ -111,11 +66,10 @@ fn begin_midi_hook(mut device: str, init_callback: fn(*mut void) -> bool, midi_c
   const N_BYTES := N_VOICES * 3;
   mut buf: [u8; N_BYTES];
   mut bytes_read := 0;
+  
   while (bytes_read = std::read(fd, buf, N_BYTES)) != -1 {
     for idx in 0..(bytes_read/3) {
-      if !midi_callback(buf[idx+0], buf[idx+1], buf[idx+2], user_arg) {
-        return;
-      }
+      midi_callback(buf[idx+0], buf[idx+1], buf[idx+2], user_arg);
     }
   }
 }

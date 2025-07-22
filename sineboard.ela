@@ -1,15 +1,5 @@
 import jst::*;
-
-struct SineBoard;
-fn fm_generator(voice: *mut Voice) -> f32 {
-  f := sine_generator(voice);
-  m := sine_generator(voice);
-  mod_index: f32 = f * math::atan2(f, m) - 1;
-  carrier_phase := voice.phase + mod_index * m;
-  sample := voice.velocity * voice.envelope * math::cos(carrier_phase) as f32;
-  instrument: *mut SineBoard = voice.user_arg;
-  return sample;
-}
+import map::*;
 
 struct SineBoard {
   voices: List!<Voice>,
@@ -17,16 +7,31 @@ struct SineBoard {
     attack: 0.001,
     release: 0.001,
   },
-  pitch_bend: f32,
+  parameters: InstrumentParameters,
+}
+
+// basic sine oscillator / sample generator.
+fn sine_generator(voice: *mut Voice, parameters: *mut InstrumentParameters) -> f32 {
+  voice.phase += voice.phase_step * parameters.pitch_bend;
+  if voice.phase > 2.0 * 3.14159265 {
+    voice.phase -= 2.0 * 3.14159265;
+  }
+  phase := voice.phase;
+  sample := voice.velocity * voice.envelope * math::cos(phase) as f32;
+  return sample;
+}
+
+fn fm_generator(voice: *mut Voice, parameters: *mut InstrumentParameters) -> f32 {
+  f := sine_generator(voice, parameters);
+  m := sine_generator(voice, parameters);
+  mod_index: f32 = f * math::atan2(f, m) - 1;
+  carrier_phase := voice.phase + mod_index * m;
+  sample := voice.velocity * voice.envelope * math::cos(carrier_phase) as f32;
+  return sample;
 }
 
 impl Instrument for SineBoard {
   fn set_voice_parameters(*mut self, freq: f32, voice: *mut Voice) {
-    if freq < 130 {
-      voice.generator = &mut sine_generator;
-      voice.phase_step *= 2;
-    } else {
-      voice.generator = &mut fm_generator;
-    }
+    voice.generator = &mut fm_generator;
   }
 }
