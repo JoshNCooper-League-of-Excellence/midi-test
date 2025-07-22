@@ -81,28 +81,24 @@ impl Destroy for Context {
   }
 }
 
-fn mix_instruments(context: *mut Context, out: *mut f32, n: s32) {
+fn assemble_master_mix(context: *mut Context, out: *mut f32, n: s32) {
   for instrument in context.instruments.iter_mut() {
-    mut voices := instrument.get_active_voices();
     instrument.mix_voices(out, n, context.sample_rate);
-    instrument.apply_envelope(context.sample_rate);
   }
-
-
-  for i in 0..n {
-    out![i] *= OUTPUT_GAIN;
-  }
+  // run FX here.
   for i in 0..n {
     out![i] = math::clamp!<f32>(out![i], -1, 1);
+  }
+  for i in 0..n {
+    out![i] *= OUTPUT_GAIN;
   }
 }
 
 fn audio_thread_main(arg: *mut void) {
   context: *mut Context = arg;
-  mut buffer: [f32; BLOCK_SIZE];
   while true {
-    std::c::memset(buffer, 0, BLOCK_SIZE * sizeof(f32));
-    mix_instruments(context, buffer, BLOCK_SIZE);
+    mut buffer: [f32; BLOCK_SIZE];
+    assemble_master_mix(context, buffer, BLOCK_SIZE);
     mut written: s32;
     if (written = snd_pcm_writei(context.pcm, buffer, BLOCK_SIZE)) < 0 {
       snd_pcm_prepare(context.pcm); 
@@ -142,6 +138,7 @@ fn main() {
     panic("Unable to open /dev/snd");
   };
 
+
   mut i := 1;
   mut midi_devices: List!<String>;
   for entry in dir.entries {
@@ -150,14 +147,24 @@ fn main() {
       printlnf("(%) %", (i, entry));
     }
   }
-  println("Select midi device and press enter");
-  mut selection: s32;
-  while true {
-    if std::c::scanf("%d"c, &selection) != 1 || selection > midi_devices.length || selection <= 0 {
-      println("Selection invalid, try again");
-    } else {
-      break;
+
+  if midi_devices.length == 0 {
+    println("No midi devices found");
+    return;
+  }
+
+  mut selection: s32 = 1;
+  if midi_devices.length > 1 {
+    println("Select midi device and press enter");
+    while true {
+      if std::c::scanf("%d"c, &selection) != 1 || selection > midi_devices.length || selection <= 0 {
+        println("Selection invalid, try again");
+      } else {
+        break;
+      }
     }
+  } else {
+    println("Auto selected the only device available");
   }
 
   using midi_device_file := fmt::format("/dev/snd/%", (midi_devices[selection - 1],), FormatOptions.{});

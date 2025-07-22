@@ -2,7 +2,7 @@
 fn sine_generator(type_erased_voice: *mut void) -> f32 {
   voice: *mut Voice = type_erased_voice;
 
-  {
+  { // advance wave.
     voice.phase += voice.phase_inc;
     if voice.phase > 2.0 * 3.14159265 {
       voice.phase -= 2.0 * 3.14159265;
@@ -10,18 +10,16 @@ fn sine_generator(type_erased_voice: *mut void) -> f32 {
   }
 
   phase := voice.phase;
-  sample := voice.velocity * math::cos(phase) as f32;
+  sample := voice.velocity * voice.envelope * math::cos(phase) as f32;
   return sample;
 }
 
-const MIN_VALUE := 0.02;
-
 struct SineBoard {
   voices: List!<Voice>,
-  attack:  f32 = MIN_VALUE,
-  decay:   f32 = 1,
-  sustain: f32 = 1,
-  release: f32 = 0,
+  envelope: Envelope = .{
+    attack: 0.001,
+    release: 0.001,
+  },
 }
 
 impl Instrument for SineBoard {
@@ -60,25 +58,26 @@ impl Instrument for SineBoard {
       return voice.env_state != 4;
     });
   }
-  fn apply_envelope(*mut self, sample_rate: u32) {
+  fn apply_envelope(*mut self, sample_rate: f32) {
+    attack, decay, sustain, release := self.envelope;
     for voice in self.voices.iter_mut() {
-      if voice.env_state == 0 {
-        voice.envelope += 1.0 / (self.attack * sample_rate as f32);
+      if voice.env_state == ENVELOPE_STATE_ATTACK {
+        voice.envelope += 1.0 / (attack * sample_rate);
         if voice.envelope >= 1.0 {
           voice.envelope = 1.0;
-          voice.env_state = 1;
+          voice.env_state = ENVELOPE_STATE_DECAY;
         }
-      } else if voice.env_state == 1 {
-        voice.envelope -= (1.0 - self.sustain) / (self.decay * sample_rate as f32);
-        if voice.envelope <= self.sustain {
-          voice.envelope = self.sustain;
-          voice.env_state = 2;
+      } else if voice.env_state == ENVELOPE_STATE_DECAY {
+        voice.envelope -= (1.0 - sustain) / (decay * sample_rate);
+        if voice.envelope <= sustain {
+          voice.envelope = sustain;
+          voice.env_state = ENVELOPE_STATE_SUSTAIN;
         }
-      } else if voice.env_state == 3 {
-        voice.envelope -= self.sustain / (self.release * sample_rate as f32);
+      } else if voice.env_state == ENVELOPE_STATE_RELEASE {
+        voice.envelope -= sustain / (release * sample_rate);
         if voice.envelope <= 0.0 {
           voice.envelope = 0.0;
-          voice.env_state = 4;
+          voice.env_state = ENVELOPE_STATE_INACTIVE;
         }
       }
     }

@@ -35,6 +35,19 @@ impl Voice {
   }
 }
 
+struct Envelope {
+  attack:  f32  = 0,
+  decay:   f32  = 1,
+  sustain: f32  = 1,
+  release: f32  = 0
+}
+
+const ENVELOPE_STATE_ATTACK   := 0;
+const ENVELOPE_STATE_DECAY    := 1;
+const ENVELOPE_STATE_SUSTAIN  := 2;
+const ENVELOPE_STATE_RELEASE  := 3;
+const ENVELOPE_STATE_INACTIVE := 4;
+
 const O_RDWR:   s32 = 0x2;
 const S_IRUSR: s32 = 0x100;
 const S_IWUSR: s32 = 0x80;
