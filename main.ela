@@ -7,6 +7,7 @@ import jst::{
   Instrument,
   Signal
 };
+import fs::Directory;
 
 extern fn snd_pcm_open(handle: *mut *mut void, name: *const u8, stream: s32, mode: s32) -> s32;
 extern fn snd_pcm_set_params(handle: *mut void, format: s32, access: s32, channels: u32, rate: u32, soft_resample: s32, latency: u32) -> s32;
@@ -231,6 +232,31 @@ fn main() {
   }
   mut sine_board: SineBoard;
   ctx.instruments.push(dynof(&mut sine_board, Instrument));
+  mut dir := if Directory::open("/dev/snd") is Option!<Directory>::Some(dir) {
+    return dir;
+  } else {
+    panic("Unable to open /dev/snd");
+  };
+
+  mut i := 1;
+  mut midi_devices: List!<String>;
+  for entry in dir.entries {
+    if entry.starts_with("midi") {
+      midi_devices.push(entry);
+      printlnf("(%) %", (i, entry));
+    }
+  }
+  println("Select midi device and press enter");
+  mut selection: s32;
+  while true {
+    if std::c::scanf("%d"c, &selection) != 1 || selection > midi_devices.length || selection <= 0 {
+      println("Selection invalid, try again");
+    } else {
+      break;
+    }
+  }
+
+  using midi_device_file := fmt::format("/dev/snd/%", (midi_devices[selection - 1],), FormatOptions.{});
   mut audio_thread := Thread::start(&mut audio_thread_main, &mut ctx);
-  midi::begin_midi_hook("/dev/snd/midiC1D0", &mut on_init, &mut on_midi_event, &mut ctx);
+  midi::begin_midi_hook(midi_device_file.as_str(), &mut on_init, &mut on_midi_event, &mut ctx);
 }
