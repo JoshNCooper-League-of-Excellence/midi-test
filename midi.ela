@@ -59,7 +59,6 @@ const note_names: [str; 12] = .[
   "B",
 ];
 
-// A4=440hz tuning of course.
 fn pitch_from_midi_note_id(note_id: s32) -> f32 {
   return 440.0 * math::pow(2.0, (note_id as f32 - 69.0) / 12.0);
 }

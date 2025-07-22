@@ -8,6 +8,7 @@ import jst::{
   Signal
 };
 import fs::Directory;
+import sineboard::*;
 
 extern fn snd_pcm_open(handle: *mut *mut void, name: *const u8, stream: s32, mode: s32) -> s32;
 extern fn snd_pcm_set_params(handle: *mut void, format: s32, access: s32, channels: u32, rate: u32, soft_resample: s32, latency: u32) -> s32;
@@ -79,14 +80,6 @@ impl Destroy for Context {
     }
   }
 }
-// Improved one-pole IIR lowpass filter for audio smoothing
-fn lowpass_filter(out: *mut f32, n: s32, smoothing: f32) {
-  mut prev: f32 = out![0];
-  for i in 1..n {
-    out![i] = prev + smoothing * (out![i] - prev);
-    prev = out![i];
-  }
-}
 
 fn mix_instruments(context: *mut Context, out: *mut f32, n: s32) {
   for instrument in context.instruments.iter_mut() {
@@ -115,95 +108,6 @@ fn audio_thread_main(arg: *mut void) {
       snd_pcm_prepare(context.pcm); 
       fmt::printlnf("ALSA write error: %", (written,), FormatOptions.{});
     }
-  }
-}
-
-fn sine_generator(type_erased_voice: *mut void) -> f32 {
-  voice: *mut Voice = type_erased_voice;
-
-  {
-    voice.phase += voice.phase_inc;
-    if voice.phase > 2.0 * 3.14159265 {
-      voice.phase -= 2.0 * 3.14159265;
-    }
-  }
-
-  phase := voice.phase;
-  sample := voice.velocity * math::cos(phase) as f32;
-  return sample;
-}
-
-const MIN_VALUE := 0.02;
-
-struct SineBoard {
-  voices: List!<Voice>,
-  attack:  f32 = MIN_VALUE,
-  decay:   f32 = 1,
-  sustain: f32 = 1,
-  release: f32 = 0,
-}
-
-impl Instrument for SineBoard {
-  fn initialize(*mut self) -> bool {
-    return true;
-  }
-  fn handle_midi_event(*mut self, status: s32, note: s32, velocity: s32, sample_rate: f32) {
-    if status == 0x90 && velocity > 0 {
-      freq: f32 = pitch_from_midi_note_id(note);
-      self.voices.push(Voice.{
-        freq: freq,
-        velocity: velocity as f32 / 127.0,
-        phase_inc: 2.0 * 3.14159265 * freq / sample_rate,
-        released: false,
-        generator: &mut sine_generator,
-      });
-    } else if (status == 0x80) || (status == 0x90 && velocity == 0) {
-      freq: f32 = pitch_from_midi_note_id(note);
-      for voice in self.voices.iter_mut() {
-        if math::abs(voice.freq - freq) < 1.0 {
-          voice.env_state = 3;
-        }
-      }
-    }
-  }
-  fn mix_voices(*mut self, out: *mut f32, n: s32, sample_rate: u32) {
-    self.apply_envelope(sample_rate);
-    for i in 0..n {
-      for voice in self.voices.iter_mut() {
-        if voice.env_state != 4 {
-          out![i] += voice.generator(voice);
-        }
-      }
-    }
-    self.voices.retain(fn (voice: *Voice) -> bool {
-      return voice.env_state != 4;
-    });
-  }
-  fn apply_envelope(*mut self, sample_rate: u32) {
-    for voice in self.voices.iter_mut() {
-      if voice.env_state == 0 {
-        voice.envelope += 1.0 / (self.attack * sample_rate as f32);
-        if voice.envelope >= 1.0 {
-          voice.envelope = 1.0;
-          voice.env_state = 1;
-        }
-      } else if voice.env_state == 1 {
-        voice.envelope -= (1.0 - self.sustain) / (self.decay * sample_rate as f32);
-        if voice.envelope <= self.sustain {
-          voice.envelope = self.sustain;
-          voice.env_state = 2;
-        }
-      } else if voice.env_state == 3 {
-        voice.envelope -= self.sustain / (self.release * sample_rate as f32);
-        if voice.envelope <= 0.0 {
-          voice.envelope = 0.0;
-          voice.env_state = 4;
-        }
-      }
-    }
-  }
-  fn get_active_voices(*mut self) -> mut [Voice] {
-    return self.voices.as_slice_mut();
   }
 }
 
