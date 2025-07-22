@@ -17,7 +17,7 @@ fn sine_generator(voice: *mut Voice, parameters: *mut InstrumentParameters) -> f
     voice.phase -= 2.0 * 3.14159265;
   }
   phase := voice.phase;
-  return  voice.velocity * voice.envelope * math::cos(phase) as f32;
+  return  voice.velocity * voice.envelope.value * math::cos(phase) as f32;
 }
 
 
@@ -26,14 +26,14 @@ fn fm_generator(voice: *mut Voice, parameters: *mut InstrumentParameters) -> f32
   m := sine_generator(voice, parameters);
   mod_index: f32 = f * math::atan2(f, m) - 1;
   carrier_phase := voice.phase + mod_index * m;
-  mut sample := voice.velocity * voice.envelope * math::cos(carrier_phase) as f32;
+  mut sample := voice.velocity * voice.envelope.value * math::cos(carrier_phase) as f32;
   sample *= math::sin(carrier_phase);
   return sample;
 }
 
 impl Instrument for SineBoard {
   fn set_voice_parameters(*mut self, freq: f32, voice: *mut Voice) {
-    voice.generator = &mut fm_generator;
+    voice.generator = &mut sine_generator;
     // voice.generator = fn(voice: *mut Voice, parameters: *mut InstrumentParameters) -> f32 {
     //   f := fm_generator(voice, parameters);
     //   m := fm_generator(voice, parameters) * math::asin(f * 2);
@@ -44,8 +44,6 @@ impl Instrument for SineBoard {
     // };
   }
 }
-
-const ECHO_BUFFER_INITIAL_LENGTH: s32 = 48000;
 
 struct Echo {
   buffer: List!<f32>,

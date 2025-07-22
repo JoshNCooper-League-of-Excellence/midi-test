@@ -4,6 +4,7 @@ module std {
   extern fn open(__file: *const u8, __oflag: s32, __mode: s32) -> s32;
   extern fn close(__fd: s32) -> s32;
 }
+import pthread::*;
 
 const O_RDWR:   s32 = 0x2;
 const S_IRUSR: s32 = 0x100;
@@ -42,36 +43,12 @@ fn midi_note_printer_callback(status: s32, note_id: s32, velocity: s32) -> bool 
     return "NULL";
   }
   if status_string == "NULL" {
-    std::printf("(?) v=%d\n", velocity);
+    std::printf("(? = 0x%x) v=%d\n", status, velocity);
     return true;
   }
-  using note_name := format("%%", (note_names[note_id % 12], note_id / 12 - 1), fmt::FormatOptions.{});
-  printlnf("% % v=%", (note_name, status_string, velocity, fmt::FormatOptions.{}));
+  using note_name := fmt::format("%%", (note_names[note_id % 12], note_id / 12 - 1), fmt::FormatOptions.{});
+  fmt::printlnf("% % v=%", (note_name, status_string, velocity, fmt::FormatOptions.{}));
   return true;
-}
-
-fn begin_midi_hook(mut device: str, init_callback: fn(*mut void) -> bool, midi_callback: MidiCallback, user_arg: *mut void) {
-  mut fd := 0;
-  if (fd = std::open(device.data, O_RDWR, S_IRUSR | S_IWUSR)) == -1 {
-    std::printf("failed to open midi device\n");
-    return;
-  }
-  defer std::close(fd);
-
-  if !init_callback(user_arg) {
-    return;
-  }
-
-  const N_VOICES := 12;
-  const N_BYTES := N_VOICES * 3;
-  mut buf: [u8; N_BYTES];
-  mut bytes_read := 0;
-  
-  while (bytes_read = std::read(fd, buf, N_BYTES)) != -1 {
-    for idx in 0..(bytes_read/3) {
-      midi_callback(buf[idx+0], buf[idx+1], buf[idx+2], user_arg);
-    }
-  }
 }
 
 // All of these status codes assume channel 0.

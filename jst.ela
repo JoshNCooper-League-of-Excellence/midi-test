@@ -1,34 +1,18 @@
 import map::*;
+import midi::*;
 struct Voice;
 struct InstrumentParameters;
 
 type SampleGenerator :: fn(*mut Voice, *mut InstrumentParameters) -> f32;
 
-struct Voice {
-  freq: f32,
-  velocity: f32,
-  phase: f32,
-  phase_step: f32,
-  envelope: f32,
-  env_state: s32,
-  release_start: f32,
-  released: bool,
-  id: s32, // ! Never change this value!! it will only cause bad things and no fun effects!!
-  generator: SampleGenerator,
-  user_arg: *mut void, // typically a '*mut dyn Instrument', but without out of order compilation we can't figure out a way to get that to work without type erasure.
-}
-
 struct Envelope {
-  attack:  f32  = 0,
+
+  attack:  f32  = 0.001,
   decay:   f32  = 1,
   sustain: f32  = 1,
-  release: f32  = 0
-}
-
-// TODO: add a bunch of CC crap here.
-struct InstrumentParameters {
-  pitch_bend: f32 = 1.0,
-  mod: f32 = 0.0
+  release: f32  = 0.001,
+  state:   u32,
+  value:   f32  = 0,
 }
 
 const ENVELOPE_STATE_ATTACK   := 0;
@@ -36,6 +20,47 @@ const ENVELOPE_STATE_DECAY    := 1;
 const ENVELOPE_STATE_SUSTAIN  := 2;
 const ENVELOPE_STATE_RELEASE  := 3;
 const ENVELOPE_STATE_INACTIVE := 4;
+
+impl Envelope {
+  fn apply(*mut self, sample_rate: f32) {
+    if self.state == ENVELOPE_STATE_ATTACK {
+      self.value += 1.0 / (self.attack * sample_rate);
+      if self.value >= 1.0 {
+        self.value = 1.0;
+        self.state = ENVELOPE_STATE_DECAY;
+      }
+    } else if self.state == ENVELOPE_STATE_DECAY {
+      self.value -= (1.0 - self.sustain) / (self.decay * sample_rate);
+      if self.value <= self.sustain {
+        self.value = self.sustain;
+        self.state = ENVELOPE_STATE_SUSTAIN;
+      }
+    } else if self.state == ENVELOPE_STATE_RELEASE {
+      self.value -= self.sustain / (self.release * sample_rate);
+      if self.value <= 0.0 {
+        self.value = 0.0;
+        self.state = ENVELOPE_STATE_INACTIVE;
+      }
+    }
+  }
+}
+
+struct Voice {
+  id: s32, // ! Never change this value!! it will only cause bad things and no fun effects!!
+  freq: f32,
+  velocity: f32,
+  phase: f32,
+  phase_step: f32,
+  envelope: Envelope,
+  generator: SampleGenerator,
+  user_arg: *mut void, // typically a '*mut dyn Instrument', but without out of order compilation we can't figure out a way to get that to work without type erasure.
+}
+
+// TODO: add a bunch of CC crap here.
+struct InstrumentParameters {
+  pitch_bend: f32 = 1.0,
+  mod: f32 = 0.0
+}
 
 trait Instrument {
   // This gets called after 'generate_new_voice' so you can leave the default voice generation, and still customize.
@@ -46,7 +71,7 @@ trait Instrument {
         voice.phase -= 2.0 * 3.14159265;
       }
       phase := voice.phase;
-      sample := voice.velocity * voice.envelope * math::cos(phase) as f32;
+      sample := voice.velocity * voice.envelope.value * math::cos(phase) as f32;
       return sample;
     };
   }
@@ -79,7 +104,7 @@ trait Instrument {
       freq: f32 = pitch_from_midi_note_id(note);
       for voice in self.voices.iter_mut() {
         if voice.id == note {
-          voice.env_state = 3;
+          voice.envelope.state = 3;
         }
       }
     }
@@ -90,7 +115,7 @@ trait Instrument {
       self.parameters.pitch_bend = normalized_value + 1;
     }
   }
-  
+
   fn initialize(*mut self) -> bool {
     return true;
   }
@@ -99,38 +124,18 @@ trait Instrument {
     return self.voices.as_slice_mut();
   }
 
-  fn apply_envelope(*mut self, sample_rate: f32) {
-    attack, decay, sustain, release := self.envelope;
-    for voice in self.voices.iter_mut() {
-      if voice.env_state == ENVELOPE_STATE_ATTACK {
-        voice.envelope += 1.0 / (attack * sample_rate);
-        if voice.envelope >= 1.0 {
-          voice.envelope = 1.0;
-          voice.env_state = ENVELOPE_STATE_DECAY;
-        }
-      } else if voice.env_state == ENVELOPE_STATE_DECAY {
-        voice.envelope -= (1.0 - sustain) / (decay * sample_rate);
-        if voice.envelope <= sustain {
-          voice.envelope = sustain;
-          voice.env_state = ENVELOPE_STATE_SUSTAIN;
-        }
-      } else if voice.env_state == ENVELOPE_STATE_RELEASE {
-        voice.envelope -= sustain / (release * sample_rate);
-        if voice.envelope <= 0.0 {
-          voice.envelope = 0.0;
-          voice.env_state = ENVELOPE_STATE_INACTIVE;
-        }
-      }
-    }
+  fn apply_envelopes(*mut self, sample_rate: f32) {
+    for voice in self.get_active_voices().iter_mut() {
+      voice.envelope.apply(sample_rate);
+    }    
   }
 
   fn mix_voices(*mut self, out: mut [f32], sample_rate: u32) {
-    self.apply_envelope(sample_rate);
     for i in 0..out.length {
       mut sum := 0.0;
       mut active := 0;
       for voice in self.get_active_voices().iter_mut() {
-        if voice.env_state != ENVELOPE_STATE_INACTIVE {
+        if voice.envelope.state != ENVELOPE_STATE_INACTIVE {
           sum += voice.generator(voice, &mut self.parameters);
           active += 1;
         }
@@ -140,7 +145,7 @@ trait Instrument {
       }
     }
     self.voices.retain(fn (voice: *Voice) -> bool {
-      return voice.env_state != 4;
+      return voice.envelope.state != 4;
     });
   }
 }
