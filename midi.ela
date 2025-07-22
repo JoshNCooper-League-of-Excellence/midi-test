@@ -122,3 +122,19 @@ fn begin_midi_hook(mut device: str, init_callback: fn(*mut void) -> bool, midi_c
     }
   }
 }
+
+// basic sine oscillator / sample generator.
+fn sine_generator(type_erased_voice: *mut void) -> f32 {
+  voice: *mut Voice = type_erased_voice;
+
+  { // advance wave.
+    voice.phase += voice.phase_inc;
+    if voice.phase > 2.0 * 3.14159265 {
+      voice.phase -= 2.0 * 3.14159265;
+    }
+  }
+
+  phase := voice.phase;
+  sample := voice.velocity * voice.envelope * math::cos(phase) as f32;
+  return sample;
+}

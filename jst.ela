@@ -4,9 +4,54 @@ struct Signal {
 }
 
 trait Instrument {
-  fn initialize(*mut self) -> bool;
   fn handle_midi_event(*mut self, status: s32, note: s32, velocity: s32, sample_rate: f32);
-  fn mix_voices(*mut self, out: *mut f32, n: s32, sample_rate: u32);
-  fn apply_envelope(*mut self, sample_rate: f32);
-  fn get_active_voices(*mut self) -> mut [Voice];
+  fn initialize(*mut self) -> bool {
+    return true;
+  }
+  fn get_active_voices(*mut self) -> mut [Voice] {
+    return self.voices.as_slice_mut();
+  }
+  fn apply_envelope(*mut self, sample_rate: f32) {
+    attack, decay, sustain, release := self.envelope;
+    for voice in self.voices.iter_mut() {
+      if voice.env_state == ENVELOPE_STATE_ATTACK {
+        voice.envelope += 1.0 / (attack * sample_rate);
+        if voice.envelope >= 1.0 {
+          voice.envelope = 1.0;
+          voice.env_state = ENVELOPE_STATE_DECAY;
+        }
+      } else if voice.env_state == ENVELOPE_STATE_DECAY {
+        voice.envelope -= (1.0 - sustain) / (decay * sample_rate);
+        if voice.envelope <= sustain {
+          voice.envelope = sustain;
+          voice.env_state = ENVELOPE_STATE_SUSTAIN;
+        }
+      } else if voice.env_state == ENVELOPE_STATE_RELEASE {
+        voice.envelope -= sustain / (release * sample_rate);
+        if voice.envelope <= 0.0 {
+          voice.envelope = 0.0;
+          voice.env_state = ENVELOPE_STATE_INACTIVE;
+        }
+      }
+    }
+  }
+  fn mix_voices(*mut self, out: *mut f32, n: s32, sample_rate: u32) {
+    self.apply_envelope(sample_rate);
+    for i in 0..n {
+      mut sum := 0.0;
+      mut active := 0;
+      for voice in self.get_active_voices().iter_mut() {
+        if voice.env_state != ENVELOPE_STATE_INACTIVE {
+          sum += voice.generator(voice);
+          active += 1;
+        }
+      }
+      if active > 0 {
+        out![i] += sum;
+      }
+    }
+    self.voices.retain(fn (voice: *Voice) -> bool {
+      return voice.env_state != 4;
+    });
+  }
 }

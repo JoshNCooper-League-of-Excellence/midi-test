@@ -1,16 +1,12 @@
 
-fn sine_generator(type_erased_voice: *mut void) -> f32 {
+fn fm_generator(type_erased_voice: *mut void) -> f32 {
+  f := sine_generator(type_erased_voice);
+  m := sine_generator(type_erased_voice);
+
   voice: *mut Voice = type_erased_voice;
-
-  { // advance wave.
-    voice.phase += voice.phase_inc;
-    if voice.phase > 2.0 * 3.14159265 {
-      voice.phase -= 2.0 * 3.14159265;
-    }
-  }
-
-  phase := voice.phase;
-  sample := voice.velocity * voice.envelope * math::cos(phase) as f32;
+  mod_index: f32 = f * math::atan2(f, m);
+  carrier_phase := voice.phase + mod_index * m;
+  sample := voice.velocity * voice.envelope * math::cos(carrier_phase) as f32;
   return sample;
 }
 
@@ -23,9 +19,6 @@ struct SineBoard {
 }
 
 impl Instrument for SineBoard {
-  fn initialize(*mut self) -> bool {
-    return true;
-  }
   fn handle_midi_event(*mut self, status: s32, note: s32, velocity: s32, sample_rate: f32) {
     if status == 0x90 && velocity > 0 {
       freq: f32 = pitch_from_midi_note_id(note);
@@ -34,7 +27,7 @@ impl Instrument for SineBoard {
         velocity: velocity as f32 / 127.0,
         phase_inc: 2.0 * 3.14159265 * freq / sample_rate,
         released: false,
-        generator: &mut sine_generator,
+        generator: &mut fm_generator,
       });
     } else if (status == 0x80) || (status == 0x90 && velocity == 0) {
       freq: f32 = pitch_from_midi_note_id(note);
@@ -44,45 +37,5 @@ impl Instrument for SineBoard {
         }
       }
     }
-  }
-  fn mix_voices(*mut self, out: *mut f32, n: s32, sample_rate: u32) {
-    self.apply_envelope(sample_rate);
-    for i in 0..n {
-      for voice in self.voices.iter_mut() {
-        if voice.env_state != 4 {
-          out![i] += voice.generator(voice);
-        }
-      }
-    }
-    self.voices.retain(fn (voice: *Voice) -> bool {
-      return voice.env_state != 4;
-    });
-  }
-  fn apply_envelope(*mut self, sample_rate: f32) {
-    attack, decay, sustain, release := self.envelope;
-    for voice in self.voices.iter_mut() {
-      if voice.env_state == ENVELOPE_STATE_ATTACK {
-        voice.envelope += 1.0 / (attack * sample_rate);
-        if voice.envelope >= 1.0 {
-          voice.envelope = 1.0;
-          voice.env_state = ENVELOPE_STATE_DECAY;
-        }
-      } else if voice.env_state == ENVELOPE_STATE_DECAY {
-        voice.envelope -= (1.0 - sustain) / (decay * sample_rate);
-        if voice.envelope <= sustain {
-          voice.envelope = sustain;
-          voice.env_state = ENVELOPE_STATE_SUSTAIN;
-        }
-      } else if voice.env_state == ENVELOPE_STATE_RELEASE {
-        voice.envelope -= sustain / (release * sample_rate);
-        if voice.envelope <= 0.0 {
-          voice.envelope = 0.0;
-          voice.env_state = ENVELOPE_STATE_INACTIVE;
-        }
-      }
-    }
-  }
-  fn get_active_voices(*mut self) -> mut [Voice] {
-    return self.voices.as_slice_mut();
   }
 }

@@ -81,13 +81,14 @@ impl Destroy for Context {
   }
 }
 
+
 fn assemble_master_mix(context: *mut Context, out: *mut f32, n: s32) {
   for instrument in context.instruments.iter_mut() {
     instrument.mix_voices(out, n, context.sample_rate);
   }
   // run FX here.
   for i in 0..n {
-    out![i] = math::clamp!<f32>(out![i], -1, 1);
+    // out![i] = math::clamp!<f32>(out![i], STATIC_LIMITER.0, STATIC_LIMITER.1);
   }
   for i in 0..n {
     out![i] *= OUTPUT_GAIN;
