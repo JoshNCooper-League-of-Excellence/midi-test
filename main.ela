@@ -151,12 +151,12 @@ fn main() {
   mut sine_board: SineBoard;
   ctx.instruments.push(dynof(&mut sine_board, Instrument));
 
-  // mut echo: Echo;
-  // ctx.effects.push(dynof(&mut echo, Effect));
-  // echo.init();
   mut chorus: Chorus;
   ctx.effects.push(dynof(&mut chorus, Effect));
   chorus.init();
+  // mut echo: Echo;
+  // ctx.effects.push(dynof(&mut echo, Effect));
+  // echo.init();
 
   using midi_device_file := fmt::format("/dev/snd/%", (get_midi_device_name(),), FormatOptions.{});
   mut audio_thread := Thread::start(&mut audio_thread_main, &mut ctx);

@@ -22,6 +22,17 @@ fn sine_generator(voice: *mut Voice, parameters: *mut InstrumentParameters) -> f
   return  voice.velocity * voice.envelope * math::cos(phase) as f32;
 }
 
+fn sawtooth_generator(voice: *mut Voice, parameters: *mut InstrumentParameters) -> f32 {
+  voice.phase += voice.phase_step * parameters.pitch_bend;
+  if voice.phase > 2.0 * 3.14159265 {
+    voice.phase -= 2.0 * 3.14159265;
+  }
+  // Sawtooth wave ranges from -1 to 1 over one period
+  phase := voice.phase;
+  sample := 2.0 * (phase / (2.0 * 3.14159265)) - 1.0;
+  return voice.velocity * voice.envelope * sample as f32;
+}
+
 
 fn fm_generator(voice: *mut Voice, parameters: *mut InstrumentParameters) -> f32 {
   f := sine_generator(voice, parameters);
@@ -35,7 +46,7 @@ fn fm_generator(voice: *mut Voice, parameters: *mut InstrumentParameters) -> f32
 
 impl Instrument for SineBoard {
   fn set_voice_parameters(*mut self, freq: f32, voice: *mut Voice) {
-    voice.generator = &mut fm_generator;
+    voice.generator = &mut sawtooth_generator;
     // voice.generator = fn(voice: *mut Voice, parameters: *mut InstrumentParameters) -> f32 {
     //   f := fm_generator(voice, parameters);
     //   m := fm_generator(voice, parameters) * math::asin(f * 2);
