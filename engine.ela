@@ -128,7 +128,7 @@ fn start_midi_thread(context: *mut Context, mut device: str, init_callback: fn(*
         midi_callback(buf[idx+0] & 0xF0, buf[idx+1], buf[idx+2], user_arg);
       }
     }
-  }, &mut (midi_callback, init_callback, user_arg, device));
+  }, &mut (midi_callback, init_callback, user_arg, device)).unwrap();
 }
 
 fn get_midi_device_name() -> String {
@@ -176,12 +176,16 @@ fn init_audio_engine() -> Result!<Context, str> {
   mut sine_board: SineBoard;
   ctx.instruments.push(dynof(&mut sine_board, Instrument));
 
-  mut echo: Echo;
-  ctx.effects.push(dynof(&mut echo, Effect));
-  echo.init();
+  // mut echo: Echo;
+  // ctx.effects.push(dynof(&mut echo, Effect));
+  // echo.init();
+
+  mut chorus: Chorus;
+  ctx.effects.push(dynof(&mut chorus));
+  chorus.init();
 
   using midi_device_file := fmt::format("/dev/snd/%", (get_midi_device_name(),), FormatOptions.{});
-  ctx.audio_thread = Thread::start(&mut audio_thread_main, &mut ctx);
+  ctx.audio_thread = Thread::start(&mut audio_thread_main, &mut ctx).unwrap();
   ctx.midi_thread = midi::start_midi_thread(&mut ctx, midi_device_file.as_str(), &mut on_init, &mut on_midi_event, &mut ctx);
   return Result!<Context, str>::Ok(ctx);
 }
